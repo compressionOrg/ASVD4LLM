@@ -19,7 +19,11 @@ def main(args):
     torch.backends.cudnn.deterministic = True
 
     # Load model
-    model_id = args.model_id
+    # model_id = args.model_id
+    
+    # Offline load moodel
+    model_id = args.cache_dir + "/models--" + args.model_id.replace("/", "--") + "/model"
+    
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -68,6 +72,7 @@ def main(args):
         use_bos=args.use_bos,
     )
     print(result)
+    
     if not os.path.exists("output"):
         os.makedirs("output")
     with open("output/result.txt", "a+") as f:
@@ -84,6 +89,11 @@ if __name__ == "__main__":
         type=str,
         default="facebook/opt-1.3b",
         help="Pretrained model ID",
+    )
+    parser.add_argument(
+        "--cache_dir", 
+        type=str,
+        default="llm_weights",
     )
     parser.add_argument(
         "--ppl_target",
@@ -154,7 +164,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--eval_ppl",
-        default="wikitext2,ptb",
+        default="wikitext2,ptb,c4",
         type=str,
     )
     parser.add_argument("--eval_tasks", type=str, default="")

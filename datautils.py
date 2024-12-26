@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 import random
 import io
 import json
@@ -21,19 +21,21 @@ def set_seed(seed):
 def sample_train_loaders(name, tokenizer, nsamples=128, seed=0, seqlen=2048):
     set_seed(seed)
     if "wikitext2" in name:
-        traindata = load_dataset(
-            "wikitext",
-            "wikitext-2-raw-v1",
-            split="train",
-        )
+        # traindata = load_dataset(
+        #     "wikitext",
+        #     "wikitext-2-raw-v1",
+        #     split="train",
+        # )
+        traindata = load_from_disk("datasets/wikitext/train")
         traindata = "\n\n".join(traindata["text"])
     elif "c4" in name:
-        traindata = load_dataset(
-            "allenai/c4",
-            "allenai--c4",
-            data_files={"train": "en/c4-train.00000-of-01024.json.gz"},
-            split="train",
-        )
+        # traindata = load_dataset(
+        #     "allenai/c4",
+        #     "allenai--c4",
+        #     data_files={"train": "en/c4-train.00000-of-01024.json.gz"},
+        #     split="train",
+        # )
+        traindata = load_from_disk("datasets/c4/train")
         traindata = "\n\n".join(traindata["text"])
     else:
         raise NotImplementedError
@@ -113,19 +115,22 @@ def get_calib_data(name, tokenizer, model_id, nsamples, seqlen=2048, seed=3, use
         traindataset = torch.load(cache_file)
         return traindataset
     if name == "c4":
-        traindata = load_dataset(
-            "allenai/c4", data_files={"train": "en/c4-train.00000-of-01024.json.gz"}, split="train"
-        )
+        # traindata = load_dataset(
+        #     "allenai/c4", data_files={"train": "en/c4-train.00000-of-01024.json.gz"}, split="train"
+        # )
+        traindata = load_from_disk("datasets/c4/train")
         tot_text = "\n\n".join(traindata["text"])
     elif name == "wikitext2":
-        traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        # traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        traindata = load_from_disk("datasets/wikitext/train")
         tot_text = "\n\n".join(traindata["text"])
     elif name == "ptb":
-        traindata = load_dataset("ptb_text_only", "penn_treebank", split="train")
+        # traindata = load_dataset("ptb_text_only", "penn_treebank", split="train")
+        traindata = load_from_disk("datasets/ptb/train")
         tot_text = "\n\n".join(traindata["sentence"])
     elif name == "alpaca":
         # this is for chat models
-        data_path = "data/alpaca_data.json"
+        data_path = "datasets/alpaca/alpaca_data.json"
         list_data_dict = jload(data_path)
         traindataset = []
         selected_data_dict = random.sample(list_data_dict, nsamples)
@@ -162,28 +167,31 @@ def get_calib_data(name, tokenizer, model_id, nsamples, seqlen=2048, seed=3, use
 
 def get_eval_loaders(name, tokenizer):
     if "wikitext2" in name:
-        testdata = load_dataset(
-            "wikitext",
-            "wikitext-2-raw-v1",
-            split="test",
-        )
+        # testdata = load_dataset(
+        #     "wikitext",
+        #     "wikitext-2-raw-v1",
+        #     split="test",
+        # )
+        testdata = load_from_disk("datasets/wikitext/test")
         testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
         return testenc
     if "ptb" in name:
-        valdata = load_dataset(
-            "ptb_text_only",
-            "penn_treebank",
-            split="validation",
-        )
+        # valdata = load_dataset(
+        #     "ptb_text_only",
+        #     "penn_treebank",
+        #     split="validation",
+        # )
+        valdata = load_from_disk("datasets/ptb/test")
         testenc = tokenizer("\n\n".join(valdata["sentence"]), return_tensors="pt")
         return testenc
     if "c4" in name:
-        testdata = load_dataset(
-            "allenai/c4",
-            "allenai--c4",
-            data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
-            split="validation",
-        )
+        # testdata = load_dataset(
+        #     "allenai/c4",
+        #     "allenai--c4",
+        #     data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
+        #     split="validation",
+        # )
+        testdata = load_from_disk("datasets/c4/validation")
         testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
         return testenc
     raise NotImplementedError
