@@ -1,10 +1,10 @@
 #!/bin/bash
 set -x
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2,3
 
 
 # 0.1 0.2 0.3 0.4 0.5 0.6
-ratios=(0.8)
+ratios=(0.9 0.8 0.7 0.6 0.5 0.4 0.2)
 # ratios=(0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8)
 model="meta-llama/Llama-2-13b-hf"
 model_name=$(echo "$model" | awk -F'/' '{print $2}')

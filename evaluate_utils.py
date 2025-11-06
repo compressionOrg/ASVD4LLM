@@ -157,58 +157,8 @@ def evaluate_model(
             ppl = np.exp(torch.cat(nlls, dim=-1).mean().item())
             ppls[dataset] = ppl
         print("PPL after pruning: {}".format(ppls))
-        print("Weight Memory: {} MiB\n".format(torch.cuda.memory_allocated()/1024/1024))
-            # cache_testloader = f"cache_dataset/{dataset}_testloader_all.cache"
-            # if os.path.exists(cache_testloader):
-            #     testloader = torch.load(cache_testloader)
-            #     print(f"load calibration from {cache_testloader}")
-            # else:
-            #     testloader = get_eval_loaders(dataset, tokenizer)
-            #     torch.save(testloader, cache_testloader)
-            # print(dataset)
-            # testenc = testloader.input_ids
-            # if use_bos:
-            #     lm.seqlen -= 1
-            # nsamples = testenc.numel() // lm.seqlen
-            # use_cache = lm.model.config.use_cache
-            # lm.model.config.use_cache = False
-            # lm.model.eval()
-            # nlls = []
-
-            # for i in tqdm(range(nsamples)):
-            #     batch = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)].to(lm.device)
-            #     if use_bos:
-            #         bos_tokens_tensor = torch.tensor([[tokenizer.bos_token_id]] * batch.size(dim=0)).to(lm.device)
-            #         batch = torch.cat([bos_tokens_tensor, batch], dim=1)
-            #     outputs = lm.model.model(batch)
-            #     hidden_states = outputs[0]  # .to(lm.model.lm_head.weight.device)
-            #     if use_bos:
-            #         hidden_states = hidden_states[:, 1:, :]
-            #     logits = lm.model.lm_head(hidden_states)  # .contiguous()
-            #     shift_logits = logits[:, :-1, :]  # .contiguous()
-            #     shift_labels = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)][:, 1:].to(lm.device)
-            #     loss_fct = nn.CrossEntropyLoss()
-            #     loss = loss_fct(
-            #         shift_logits.view(-1, shift_logits.size(-1)),
-            #         shift_labels.view(-1),
-            #     )
-            #     neg_log_likelihood = loss.float() * lm.seqlen
-            #     nlls.append(neg_log_likelihood)
-            #     if i == limit:
-            #         break
-            #     # if i == 1:
-            #     #     print(
-            #     #         "memory_allocated",
-            #     #         i,
-            #     #         torch.cuda.memory_allocated() / 1024 / 1024,
-            #     #         "max memory_allocated",
-            #     #         torch.cuda.max_memory_allocated() / 1024**2,
-            #     #     )
-
-            # ppl = torch.exp(torch.stack(nlls).sum() / (len(nlls) * lm.seqlen))
-            # print(dataset, ppl.item())
-            # lm.model.config.use_cache = use_cache
-            # results[dataset] = ppl.item()
+        print("Weight Memory: {} GB\n".format(torch.cuda.memory_allocated()/1024/1024/1024))
+        
     if tasks == "longbench":
         from tools.eval_longbench import eval_longbench, full_longeval_datasets, small_longeval_datasets
 
@@ -237,10 +187,18 @@ def evaluate_model(
         )
         t_results = t_results["results"]
         acc_list = [t_results[key]["acc"] for key in t_results.keys() if "acc" in t_results[key]]
-        t_results["mean"] = sum(acc_list) / len(acc_list)
+        mean_acc = sum(acc_list) / len(acc_list)
+        t_results["mean"] = mean_acc
         results.update(t_results)
         print(results)
-        # print mean
-        print(f"\n\n===== mean acc: {sum(acc_list)/len(acc_list)} =====\n\n")
+        print("\n" + "="*50)
+        print("EVALUATION RESULTS (formatted for easy copying)")
+        print("="*50)
+        
+        for task_name in sorted(t_results.keys()):
+            if task_name != "mean" and "acc" in t_results[task_name]:
+                acc_value = t_results[task_name]["acc"] * 100  
+                print(f"{task_name}: {acc_value:.2f}%")
+        print(f"mean: {mean_acc * 100:.2f}%")  
 
     return results

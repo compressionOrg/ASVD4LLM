@@ -18,7 +18,7 @@ run_asvd()
     --act_aware --alpha 0.5 \
     --n_calib_samples 256 \
     --scaling_method fisher \
-    --eval_tasks "mathqa,piqa,hellaswag,winogrande,arc_easy,arc_challenge,openbookqa,boolq" \
+    --eval_tasks "mathqa,piqa,hellaswag,winogrande,arc_easy,arc_challenge,openbookqa" \
     --param_ratio_target $1 \
     --use_cache >logs/fwsvd/${model_name}_ratio_${1}.log
 }
