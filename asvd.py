@@ -24,10 +24,16 @@ def main(args):
     # Offline load moodel
     model_id = args.cache_dir + "/models--" + args.model_id.replace("/", "--") + "/model"
     
+    # 指定一个固定的设备
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True
+        model_id,
+        device_map={"": device},  # 修改这里，使用明确的设备映射
+        torch_dtype=torch.float16,
+        trust_remote_code=True
     )
 
     # if "llama" in model_id or "opt" in model_id:
@@ -60,7 +66,7 @@ def main(args):
                 model = awq_quant_sequential(model, tokenizer, 8)
             elif args.weight_quant == "awq_int4":
                 model = awq_quant_sequential(model, tokenizer, 4)
-
+    
     # evaluate
     result = evaluate_model(
         model,
@@ -121,7 +127,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_calib_samples",
         type=int,
-        default=32,
+        default=256,
         help="number of samples used for calibration",
     )
     parser.add_argument(
@@ -167,7 +173,7 @@ if __name__ == "__main__":
         default="wikitext2,ptb,c4",
         type=str,
     )
-    parser.add_argument("--eval_tasks", type=str, default="")
+    parser.add_argument('--eval_tasks', type=str, default="mathqa,piqa,hellaswag,winogrande,arc_easy,arc_challenge,openbookqa,boolq",help='Comma-separated list of evaluation tasks')
     parser.add_argument(
         "--sigma_fuse",
         type=str,

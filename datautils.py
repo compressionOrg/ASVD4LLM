@@ -1,197 +1,229 @@
 import os
-import numpy as np
-import torch
-from datasets import load_dataset, load_from_disk
 import random
-import io
-import json
+import torch
+import sys
+from datasets import load_dataset
+from torch.utils.data.dataset import Dataset
 
-"""
-doc https://huggingface.co/docs/datasets/loading
-doc https://huggingface.co/docs/datasets/process
-doc https://huggingface.co/blog/llama2#how-to-prompt-llama-2
-"""
+current_path = os.path.dirname(os.path.abspath(__file__))
+parent_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(current_path)
 
-
-def set_seed(seed):
-    np.random.seed(seed)
-    torch.random.manual_seed(seed)
-
-
-def sample_train_loaders(name, tokenizer, nsamples=128, seed=0, seqlen=2048):
-    set_seed(seed)
-    if "wikitext2" in name:
-        # traindata = load_dataset(
-        #     "wikitext",
-        #     "wikitext-2-raw-v1",
-        #     split="train",
-        # )
-        traindata = load_from_disk("datasets/wikitext/train")
-        traindata = "\n\n".join(traindata["text"])
-    elif "c4" in name:
-        # traindata = load_dataset(
-        #     "allenai/c4",
-        #     "allenai--c4",
-        #     data_files={"train": "en/c4-train.00000-of-01024.json.gz"},
-        #     split="train",
-        # )
-        traindata = load_from_disk("datasets/c4/train")
-        traindata = "\n\n".join(traindata["text"])
-    else:
-        raise NotImplementedError
-
-    trainloader = []
-    for _ in range(nsamples):
-        i = random.randint(0, len(traindata) - seqlen * 2 - 1)
-        j = i + seqlen * 2
-        # breakpoint()
-        trainenc = tokenizer(traindata[i:j], return_tensors="pt")
-        inp = trainenc.input_ids[:, :seqlen]
-        trainloader.append(inp)
-    return trainloader
-
-
-def get_redpajama_train(tokenizer, percent=10, seed=3, batch_size=128, max_length=2048):
-    def tokenization(example):
-        return tokenizer(example["text"], truncation=True, max_length=max_length)
-
-    if percent != 100:
-        split = f"train[:{int(850000*percent/100)}]"
-    else:
-        split = "train"
-    dataset = load_dataset("togethercomputer/RedPajama-Data-1T-Sample", split=split)
-
-    processed_dataset = dataset.map(tokenization, batched=True, batch_size=batch_size, num_proc=os.cpu_count())
-    return processed_dataset
-
-
-def get_english_quote(dataset_name, tokenizer):
-    data = load_dataset(dataset_name)
-    data = data.map(lambda samples: tokenizer(samples["quote"]), batched=True)
-    return data["train"]
-
-
-def get_qat_dataset(name, tokenizer, data_percent):
-    if name == "red_pajama":
-        data = get_redpajama_train(tokenizer, data_percent)
-
-    elif name == "Abirate/english_quotes":
-        data = get_english_quote(name, tokenizer)
-    else:
-        raise NotImplementedError
-    data = data.shuffle()
-    return data
-
-
-llama_chat_format = """<s>[INST] <<SYS>>
-"Below is an instruction that describes a task. Write a response that appropriately completes the request."
-<</SYS>>
-
-{{ instruction }} [/INST] {{ response }} </s>
-"""
-
-
-def _make_r_io_base(f, mode: str):
-    if not isinstance(f, io.IOBase):
-        f = open(f, mode=mode)
-    return f
-
-
-def jload(f, mode="r"):
-    """Load a .json file into a dictionary."""
-    f = _make_r_io_base(f, mode)
-    jdict = json.load(f)
-    f.close()
-    return jdict
-
-
-def get_calib_data(name, tokenizer, model_id, nsamples, seqlen=2048, seed=3, use_bos=False):
+def get_calib_data(name, tokenizer, model_id, nsamples, seqlen=2048, seed=3, use_bos=False, batch_size=1, dataset_cache_dir=None):
+    import random
+    random.seed(seed)
     print(f" get_ptq_calib_data {name}, nsamples={nsamples}, seqlen={seqlen}, {seed}")
     cache_file = f"cache/{name}_{model_id.replace('/','_')}_{nsamples}_{seqlen}_{seed}_bos{use_bos}.pt"
-    print(f"cache_file={cache_file}")
+    nsamples += 1 #############################
     if not os.path.exists("cache"):
         os.makedirs("cache")
     if os.path.exists(cache_file):
         traindataset = torch.load(cache_file)
         return traindataset
     if name == "c4":
-        # traindata = load_dataset(
-        #     "allenai/c4", data_files={"train": "en/c4-train.00000-of-01024.json.gz"}, split="train"
-        # )
-        traindata = load_from_disk("datasets/c4/train")
-        tot_text = "\n\n".join(traindata["text"])
-    elif name == "wikitext2":
-        # traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-        traindata = load_from_disk("datasets/wikitext/train")
+        traindata = load_dataset("json", data_files="c4-train.json")['train']
         tot_text = "\n\n".join(traindata["text"])
     elif name == "ptb":
-        # traindata = load_dataset("ptb_text_only", "penn_treebank", split="train")
-        traindata = load_from_disk("datasets/ptb/train")
+        traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train', cache_dir=dataset_cache_dir)
         tot_text = "\n\n".join(traindata["sentence"])
-    elif name == "alpaca":
-        # this is for chat models
-        data_path = "datasets/alpaca/alpaca_data.json"
-        list_data_dict = jload(data_path)
-        traindataset = []
-        selected_data_dict = random.sample(list_data_dict, nsamples)
-        for example in selected_data_dict:
-            if example.get("input", "") == "":
-                s = llama_chat_format.format(instruction=example["instruction"], response=example["output"])
-                trainenc = tokenizer(s, return_tensors="pt")
-                inp = trainenc.input_ids[:, :seqlen]
-                attention_mask = torch.ones_like(inp)
-                traindataset.append({"input_ids": inp, "attention_mask": attention_mask})
-        return traindataset
-    elif name == "selfgen":
-        raise NotImplementedError
-
+    elif name == "wikitext2":
+        traindata = load_dataset("wikitext", "wikitext-2-raw-v1", split="train", cache_dir=dataset_cache_dir)
+        tot_text = "\n\n".join(traindata["text"])
     else:
         raise NotImplementedError
-    print(f"tot_text={len(tot_text)}")
     traindataset = []
-    for _ in range(nsamples):
+    for s in range(nsamples):
         i = random.randint(0, len(tot_text) - seqlen - 1)
         j = i + seqlen * 10
-        txt = tot_text[i:j]
-        ind = txt.find(".")
-        txt = txt[ind + 1 :].strip()
-        if use_bos:
-            txt = tokenizer.bos_token + txt
-        trainenc = tokenizer(txt, return_tensors="pt")
-        inp = trainenc.input_ids[:, :seqlen]
-        attention_mask = torch.ones_like(inp)
-        traindataset.append({"input_ids": inp, "attention_mask": attention_mask})
+        trainenc = tokenizer(tot_text[i:j], return_tensors="pt")
+        if trainenc.input_ids.shape[1] < seqlen:
+            s = s - 1
+            continue
+        if s % batch_size == 0:
+            if s != 0:
+                attention_mask = torch.ones_like(inp)
+                traindataset.append({"input_ids": inp, "attention_mask": attention_mask})
+            inp = trainenc.input_ids[:, :seqlen]
+        else:
+            inp = torch.cat((inp, trainenc.input_ids[:, :seqlen]), dim=0)
     torch.save(traindataset, cache_file)
     return traindataset
 
 
-def get_eval_loaders(name, tokenizer):
-    if "wikitext2" in name:
-        # testdata = load_dataset(
-        #     "wikitext",
-        #     "wikitext-2-raw-v1",
-        #     split="test",
-        # )
-        testdata = load_from_disk("datasets/wikitext/test")
-        testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
-        return testenc
-    if "ptb" in name:
-        # valdata = load_dataset(
-        #     "ptb_text_only",
-        #     "penn_treebank",
-        #     split="validation",
-        # )
-        valdata = load_from_disk("datasets/ptb/test")
-        testenc = tokenizer("\n\n".join(valdata["sentence"]), return_tensors="pt")
-        return testenc
-    if "c4" in name:
-        # testdata = load_dataset(
-        #     "allenai/c4",
-        #     "allenai--c4",
-        #     data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
-        #     split="validation",
-        # )
-        testdata = load_from_disk("datasets/c4/validation")
-        testenc = tokenizer("\n\n".join(testdata["text"]), return_tensors="pt")
-        return testenc
-    raise NotImplementedError
+
+def get_wikitext2(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
+    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train', cache_dir=dataset_cache_dir)
+    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test', cache_dir=dataset_cache_dir)
+
+    trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
+    testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
+
+    import random
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+    return trainloader, testenc
+
+def get_ptb(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
+    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train', cache_dir=dataset_cache_dir)
+    valdata = load_dataset('ptb_text_only', 'penn_treebank', split='validation', cache_dir=dataset_cache_dir)
+
+    trainenc = tokenizer("\n\n".join(traindata['sentence']), return_tensors='pt')
+    testenc = tokenizer("\n\n".join(valdata['sentence']), return_tensors='pt')
+
+    import random
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+    return trainloader, testenc
+
+def get_c4(nsamples, seed, seqlen, tokenizer):
+    traindata = load_dataset("json", data_files="utils/c4-train.json")['train']
+    valdata = load_dataset("json", data_files="utils/c4-validation.json")['train']
+
+    import random
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        while True:
+            i = random.randint(0, len(traindata) - 1)
+            trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
+            if trainenc.input_ids.shape[1] >= seqlen:
+                break
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+
+    import random
+    random.seed(0)
+    valenc = []
+    for _ in range(256):
+        while True:
+            i = random.randint(0, len(valdata) - 1)
+            tmp = tokenizer(valdata[i]['text'], return_tensors='pt')
+            if tmp.input_ids.shape[1] >= seqlen:
+                break
+        i = random.randint(0, tmp.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        valenc.append(tmp.input_ids[:, i:j])
+    valenc = torch.hstack(valenc)
+    class TokenizerWrapper:
+        def __init__(self, input_ids):
+            self.input_ids = input_ids
+    valenc = TokenizerWrapper(valenc)
+
+    return trainloader, valenc 
+
+
+
+def get_ptb_new(nsamples, seed, seqlen, tokenizer, dataset_cache_dir=None):
+    from datasets import load_dataset
+    traindata = load_dataset('ptb_text_only', 'penn_treebank', split='train', cache_dir=dataset_cache_dir)
+    testdata = load_dataset('ptb_text_only', 'penn_treebank', split='test', cache_dir=dataset_cache_dir)
+
+    trainenc = tokenizer(" ".join(traindata['sentence']), return_tensors='pt')
+    testenc = tokenizer(" ".join(testdata['sentence']), return_tensors='pt')
+
+    import random
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+    return trainloader, testenc
+
+def get_c4_new(nsamples, seed, seqlen, tokenizer):
+    traindata = load_dataset("json", data_files="utils/c4-train.json")['train']
+    valdata = load_dataset("json", data_files="utils/c4-validation.json")['train']
+
+    import random
+    random.seed(seed)
+    trainloader = []
+    for _ in range(nsamples):
+        while True:
+            i = random.randint(0, len(traindata) - 1)
+            trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
+            if trainenc.input_ids.shape[1] >= seqlen:
+                break
+        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+        j = i + seqlen
+        inp = trainenc.input_ids[:, i:j]
+        tar = inp.clone()
+        tar[:, :-1] = -100
+        trainloader.append((inp, tar))
+
+    valenc = tokenizer(' '.join(valdata[:1100]['text']), return_tensors='pt')
+    valenc = valenc.input_ids[:, :(256 * seqlen)]
+
+    class TokenizerWrapper:
+        def __init__(self, input_ids):
+            self.input_ids = input_ids
+    valenc = TokenizerWrapper(valenc)
+
+    return trainloader, valenc
+def get_loaders(name, nsamples=128, seed=0, seqlen=2048, tokenizer=None):
+    if 'wikitext2' in name:
+        return get_wikitext2(nsamples, seed, seqlen, tokenizer)
+    if 'ptb' in name:
+        if 'new' in name:
+            return get_ptb_new(nsamples, seed, seqlen, tokenizer)
+        return get_ptb(nsamples, seed, seqlen, tokenizer)
+    if 'c4' in name:
+        if 'new' in name:
+            return get_c4_new(nsamples, seed, seqlen, tokenizer)
+        return get_c4(nsamples, seed, seqlen, tokenizer)
+    
+    
+    
+def get_eval_loaders(name, tokenizer, seq_len=2048, batch_size = 4):
+    class IndexDataset(Dataset):
+        def __init__(self, tensors):
+            self.tensors = tensors
+
+        def __getitem__(self, index):
+            return self.tensors[index]
+
+        def __len__(self):
+            return len(self.tensors)
+    ####
+    def process_data(samples, tokenizer, seq_len, field_name):
+        test_ids = tokenizer("\n\n".join(samples[field_name]), return_tensors='pt').input_ids[0]
+        test_ids_batch = []
+        nsamples = test_ids.numel() // seq_len
+
+        for i in range(nsamples):
+            batch = test_ids[(i * seq_len):((i + 1) * seq_len)]
+            test_ids_batch.append(batch)
+        test_ids_batch = torch.stack(test_ids_batch)
+        return IndexDataset(tensors=test_ids_batch)
+    ####
+    if 'wikitext2' in name:
+        test_data = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+        test_dataset = process_data(test_data, tokenizer, seq_len, 'text')
+    if 'ptb' in name:
+        test_data = load_dataset('ptb_text_only', 'penn_treebank', split='test')
+        test_dataset = process_data(test_data, tokenizer, seq_len, 'sentence')
+    elif 'c4' in name:
+        test_data = load_dataset("json", data_files="c4-validation.json")['train']
+        test_dataset = process_data(test_data[0:2000], tokenizer, seq_len, 'text')
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    return test_loader

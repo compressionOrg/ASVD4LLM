@@ -9,6 +9,7 @@ from lm_eval import evaluator
 from datasets import load_dataset
 import time
 import re
+import numpy as np
 
 
 class EvalLM(BaseLM):
@@ -124,8 +125,9 @@ def evaluate_model(
     eval_ppl="",
     num_fewshot=0,
     limit=-1,
-    batch_size=1,
+    batch_size=4,
     use_bos=False,
+    device="cuda"
 ):
     """
     model: model name
@@ -137,58 +139,76 @@ def evaluate_model(
     lm = EvalLM(model, tokenizer, batch_size=batch_size)
     results = {}
     if eval_ppl:
+        ppls = {}
         for dataset in eval_ppl.split(","):
-            cache_testloader = f"/tmp/{dataset}_testloader_{model_name.replace('/', '_')}_all.cache"
-            if os.path.exists(cache_testloader):
-                testloader = torch.load(cache_testloader)
-                # print(f"load calibration from {cache_testloader}")
-            else:
-                testloader = get_eval_loaders(dataset, tokenizer)
-                torch.save(testloader, cache_testloader)
-            # print(dataset)
-            testenc = testloader.input_ids
-            if use_bos:
-                lm.seqlen -= 1
-            nsamples = testenc.numel() // lm.seqlen
-            use_cache = lm.model.config.use_cache
-            lm.model.config.use_cache = False
-            lm.model.eval()
+            test_loader = get_eval_loaders(dataset, tokenizer, seq_len=2048, batch_size = batch_size)
             nlls = []
+            for batch in tqdm(test_loader):
+                batch = batch.to(device)
+                output = model(batch, use_cache=False)
+                lm_logits = output.logits
+                if torch.isfinite(lm_logits).all():
+                    shift_logits = lm_logits[:, :-1, :].contiguous()
+                    shift_labels = batch[:, 1:].contiguous()
+                    
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+                    loss = loss_fct(shift_logits.reshape(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                    nlls.append(loss)
+            ppl = np.exp(torch.cat(nlls, dim=-1).mean().item())
+            ppls[dataset] = ppl
+        print("PPL after pruning: {}".format(ppls))
+        print("Weight Memory: {} MiB\n".format(torch.cuda.memory_allocated()/1024/1024))
+            # cache_testloader = f"cache_dataset/{dataset}_testloader_all.cache"
+            # if os.path.exists(cache_testloader):
+            #     testloader = torch.load(cache_testloader)
+            #     print(f"load calibration from {cache_testloader}")
+            # else:
+            #     testloader = get_eval_loaders(dataset, tokenizer)
+            #     torch.save(testloader, cache_testloader)
+            # print(dataset)
+            # testenc = testloader.input_ids
+            # if use_bos:
+            #     lm.seqlen -= 1
+            # nsamples = testenc.numel() // lm.seqlen
+            # use_cache = lm.model.config.use_cache
+            # lm.model.config.use_cache = False
+            # lm.model.eval()
+            # nlls = []
 
-            for i in tqdm(range(nsamples)):
-                batch = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)].to(lm.device)
-                if use_bos:
-                    bos_tokens_tensor = torch.tensor([[tokenizer.bos_token_id]] * batch.size(dim=0)).to(lm.device)
-                    batch = torch.cat([bos_tokens_tensor, batch], dim=1)
-                outputs = lm.model.model(batch)
-                hidden_states = outputs[0]  # .to(lm.model.lm_head.weight.device)
-                if use_bos:
-                    hidden_states = hidden_states[:, 1:, :]
-                logits = lm.model.lm_head(hidden_states)  # .contiguous()
-                shift_logits = logits[:, :-1, :]  # .contiguous()
-                shift_labels = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)][:, 1:].to(lm.device)
-                loss_fct = nn.CrossEntropyLoss()
-                loss = loss_fct(
-                    shift_logits.view(-1, shift_logits.size(-1)),
-                    shift_labels.view(-1),
-                )
-                neg_log_likelihood = loss.float() * lm.seqlen
-                nlls.append(neg_log_likelihood)
-                if i == limit:
-                    break
-                # if i == 1:
-                #     print(
-                #         "memory_allocated",
-                #         i,
-                #         torch.cuda.memory_allocated() / 1024 / 1024,
-                #         "max memory_allocated",
-                #         torch.cuda.max_memory_allocated() / 1024**2,
-                #     )
+            # for i in tqdm(range(nsamples)):
+            #     batch = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)].to(lm.device)
+            #     if use_bos:
+            #         bos_tokens_tensor = torch.tensor([[tokenizer.bos_token_id]] * batch.size(dim=0)).to(lm.device)
+            #         batch = torch.cat([bos_tokens_tensor, batch], dim=1)
+            #     outputs = lm.model.model(batch)
+            #     hidden_states = outputs[0]  # .to(lm.model.lm_head.weight.device)
+            #     if use_bos:
+            #         hidden_states = hidden_states[:, 1:, :]
+            #     logits = lm.model.lm_head(hidden_states)  # .contiguous()
+            #     shift_logits = logits[:, :-1, :]  # .contiguous()
+            #     shift_labels = testenc[:, (i * lm.seqlen) : ((i + 1) * lm.seqlen)][:, 1:].to(lm.device)
+            #     loss_fct = nn.CrossEntropyLoss()
+            #     loss = loss_fct(
+            #         shift_logits.view(-1, shift_logits.size(-1)),
+            #         shift_labels.view(-1),
+            #     )
+            #     neg_log_likelihood = loss.float() * lm.seqlen
+            #     nlls.append(neg_log_likelihood)
+            #     if i == limit:
+            #         break
+            #     # if i == 1:
+            #     #     print(
+            #     #         "memory_allocated",
+            #     #         i,
+            #     #         torch.cuda.memory_allocated() / 1024 / 1024,
+            #     #         "max memory_allocated",
+            #     #         torch.cuda.max_memory_allocated() / 1024**2,
+            #     #     )
 
-            ppl = torch.exp(torch.stack(nlls).sum() / (len(nlls) * lm.seqlen))
-            print(dataset, ppl.item())
-            lm.model.config.use_cache = use_cache
-            results[dataset] = ppl.item()
+            # ppl = torch.exp(torch.stack(nlls).sum() / (len(nlls) * lm.seqlen))
+            # print(dataset, ppl.item())
+            # lm.model.config.use_cache = use_cache
+            # results[dataset] = ppl.item()
     if tasks == "longbench":
         from tools.eval_longbench import eval_longbench, full_longeval_datasets, small_longeval_datasets
 

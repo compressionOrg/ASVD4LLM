@@ -31,8 +31,11 @@ lm_cache
 outputs
 checkpoints
 
+cache*
+
 cuda/build
 *.so
 *.egg-info
 *.o
 .vscode
+*.json
